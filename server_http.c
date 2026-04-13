@@ -28,7 +28,6 @@ void sigchld_handler(int s)
 int main(){
 	int sockfd;              
     	struct addrinfo *p;
-	char *secret_message = "The Cheese is in The Toaster";	
 	//Estructura de acciones a seguir cuando muere un hijo
 	struct sigaction sa;
 	//PAra guardar la direccion entrante
@@ -52,7 +51,9 @@ int main(){
 	for(p=servinfo;p!=NULL;p=p->ai_next){
 		//Probamos con la opción actual
 		sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-    	
+		//Evitar errores al reiniciar
+    		int yes = 1;
+		setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int));
 	    	// Si sockfd es -1, es que ha fallado este intento, pasamos al siguiente
 	    	if (sockfd == -1) {
 			continue; 
@@ -75,19 +76,62 @@ int main(){
  		exit(1);
 	}
 	
-	while(1){
+	while(1) {
 		addr_size = sizeof their_addr;
-		int new_fd = accept(sockfd,(struct sockaddr *)&their_addr,&addr_size);
-		if (fork() == 0){
-			close(sockfd);
-			send(new_fd, secret_message, strlen(secret_message),0);
-			close(new_fd);
-			exit(0);
+		int new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &addr_size);
+		
+		if (fork() == 0) { // Proceso HIJO
+		    close(sockfd);
+		    
+		    char request[2048];
+		    char method[10], path[256], protocol[10];
+
+		    // Recibimos los datos del navegador
+		    int bytes_recibidos = recv(new_fd, request, sizeof(request)-1, 0);
+		    
+		    if (bytes_recibidos > 0) {
+		        request[bytes_recibidos] = '\0';
+		        printf("Petición:\n%s\n", request);
+
+		        //Analizamos qué archivo quiere
+		        sscanf(request, "%s %s %s", method, path, protocol);
+		        
+		        char *file_name = path + 1; // Saltamos la '/'
+		        if (strlen(file_name) == 0) {
+		            file_name = "index.html"; // Por defecto
+		        }
+
+		        //Intentamos abrir el archivo solicitado
+		        FILE *file = fopen(file_name, "r");
+
+		        if (file == NULL) {
+		            char *error404 = "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 22\r\n\r\n<h1>404 Not Found</h1>";
+		            send(new_fd, error404, strlen(error404), 0);
+		        } else {
+		            fseek(file, 0, SEEK_END);
+		            long fsize = ftell(file);
+		            rewind(file);
+
+		            char *contenido = malloc(fsize + 1);
+		            fread(contenido, 1, fsize, file);
+		            contenido[fsize] = '\0';
+
+		            char response[512];
+		            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\nConnection: close\r\n\r\n", fsize);
+		            
+		            send(new_fd, response, strlen(response), 0);
+		            send(new_fd, contenido, fsize, 0);
+
+		            free(contenido);
+		            fclose(file);
+		        }
+		    }
+		    close(new_fd);
+		    exit(0);
 		}
-		else {
-			close(new_fd);
-		}
-	}
+		close(new_fd); // Proceso PADRE
+	    }
+	
 		
 	return 0;
 } 
